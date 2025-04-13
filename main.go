@@ -219,14 +219,14 @@ func genDestPts(source, dest Point) Route {
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Printf("Map Mgmt Paylod Error: %v", err)
+		log.Printf("Map Mgmt Payload Error: %v", err)
 		return Route{}
 	}
 
 	var payload MAP_MGMT_PAYLOAD
 	err = json.Unmarshal(body, &payload)
 	if err != nil {
-		log.Printf("Map Mgmt Unmarshall Error: %v", err)
+		log.Printf("Map Mgmt Unmarshal Error: %v", err)
 		return Route{}
 	}
 

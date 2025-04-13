@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-gpsd-simulator
+  labels:
+    app: {{ .Release.Name }}-gpsd-simulator
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-gpsd-simulator
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-gpsd-simulator
+    spec:
+      serviceAccountName: {{ .Release.Name }}-sa
+      containers:
+        - name: gpsd-simulator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            {{- range .Values.service }}
+            - containerPort: {{ .targetPort }}
+              name: {{ .name | default "http" }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-token-secret
+                  key: VAULT_TOKEN
+          volumeMounts:
+            - name: vault-ca-cert
+              mountPath: /etc/ssl/certs/vault.pem
+              subPath: vault.pem
+              readOnly: true
+      volumes:
+        - name: vault-ca-cert
+          configMap:
+            name: vault-ca-cert

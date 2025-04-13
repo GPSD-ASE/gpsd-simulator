@@ -1,0 +1,29 @@
+namespace: gpsd
+
+replicaCount: 1
+
+image:
+  repository: gpsd/gpsd-simulator
+  tag: v0.0.1
+  pullPolicy: Always
+
+env:
+  SIMULATOR_ENV: "TEST"
+  VAULT_ADDR: "http://vault.vault.svc.cluster.local:8200"
+  VAULT_AUTH_METHOD: "kubernetes"
+  VAULT_ROLE: "gpsd-simulator"
+  GIN_MODE: "release"
+  MAP_MGMT_ENDPOINT: "http://$(DEMO_GPSD_MAP_MGMT_SERVICE_HOST):$(DEMO_GPSD_MAP_MGMT_SERVICE_PORT)"
+  KAFKA_BROKER: "152.53.124.121:9092"
+
+serviceAccount:
+  create: true
+  name: gpsd-simulator-sa
+
+resources: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
