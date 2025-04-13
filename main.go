@@ -195,12 +195,23 @@ func randomPt() Point {
 	}
 }
 
-func genStaticRoute(count int) Route {
-	pts := make([]Point, 0, count)
-
-	for i := 0; i < count; i++ {
-		pts = append(pts, randomPt())
-	}
+func genStaticRoute() Route {
+	pts := []Point{{
+		Latitude:  53.350533,
+		Longitude: -6.271113,
+	}, {
+		Latitude:  53.348980,
+		Longitude: -6.281967,
+	}, {
+		Latitude:  53.346344,
+		Longitude: -6.282478,
+	}, {
+		Latitude:  53.343329,
+		Longitude: -6.275059,
+	}, {
+		Latitude:  53.344786,
+		Longitude: -6.259314,
+	}}
 
 	return pts
 }
@@ -237,6 +248,13 @@ func genDestPts(source, dest Point) Route {
 	err = json.Unmarshal(body, &payload)
 	if err != nil {
 		log.Printf("Map Mgmt Unmarshal Error: %v", err)
+		return Route{
+			source,
+			dest,
+		}
+	}
+	if len(payload.Paths) < 1 {
+		log.Println("Unable to retrieve route from MAP MANAGEMENT SERVICE")
 		return Route{
 			source,
 			dest,
@@ -369,7 +387,7 @@ func genERT(ertType ERTType, count int) []ERT {
 		ert := ERT{
 			ID:       fmt.Sprintf("%s %d", ertType, i),
 			location: randomPt(),
-			patrol:   genStaticRoute(3),
+			patrol:   genStaticRoute(),
 			ERTType:  ertType,
 		}
 
