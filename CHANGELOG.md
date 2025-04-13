@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.3] - 2025-04-13
+## [0.0.4] - 2025-04-13
 
 
 ### Fixed
-96dd5bb fix: add KAFKA_TOPIC
+dfe4da4 fix: added fix for out of range index
 
