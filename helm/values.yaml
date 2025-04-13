@@ -4,7 +4,7 @@ replicaCount: 1
 
 image:
   repository: gpsd/gpsd-simulator
-  tag: v0.0.3
+  tag: v0.0.5
   pullPolicy: Always
 
 env:
@@ -15,7 +15,8 @@ env:
   GIN_MODE: "release"
   MAP_MGMT_ENDPOINT: "http://$(DEMO_GPSD_MAP_MGMT_SERVICE_HOST):$(DEMO_GPSD_MAP_MGMT_SERVICE_PORT)"
   KAFKA_BROKER: "152.53.124.121:9092"
-  KAFKA_TOPIC: "latest_incidents"
+  KAFKA_TOPIC_INCIDENTS: "latest_incidents"
+  KAFKA_TOPIC_LOCATIONS: "ert_locations"
 
 serviceAccount:
   create: true
