@@ -4,7 +4,7 @@ replicaCount: 1
 
 image:
   repository: gpsd/gpsd-simulator
-  tag: v0.0.4
+  tag: v0.0.5
   pullPolicy: Always
 
 env:
