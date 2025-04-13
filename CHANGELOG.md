@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.5] - 2025-04-13
+## [0.0.6] - 2025-04-13
 
 
 ### Fixed
-0237682 fix: add kafka topic
+b35075e fix: hardcoded patrol route
 
