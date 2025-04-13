@@ -11,22 +11,25 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 )
 
 const (
-	groupID = "gpsd"
+	KAFKA_GROUP_ID = "gpsd_simulator"
 
 	dublinLatitude  = 53.350140
 	dublinLongitude = -6.266155
-
-	incidentChannel = "incident"
-	ertChannel      = "location"
 )
 
-var MAP_MGMT_ENDPOINT string
+var (
+	MAP_MGMT_ENDPOINT string
+	incidentChannel   string
+	ertChannel        string
+)
 
 type LocationPayload struct {
 	Id          string  `json:"id"`
@@ -90,7 +93,7 @@ var ertTeams struct {
 }
 
 func messagePubHandler(topic string, msg []byte) {
-	fmt.Printf("Topic: %s\tMessage: %s", topic, msg)
+	log.Printf("Topic: %s\tMessage: %s", topic, msg)
 
 	switch topic {
 	case ertChannel:
@@ -98,7 +101,7 @@ func messagePubHandler(topic string, msg []byte) {
 		var payload LocationPayload
 		err := json.Unmarshal(msg, &payload)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			return
 		}
 
@@ -106,12 +109,12 @@ func messagePubHandler(topic string, msg []byte) {
 		var payload IncidentPayload
 		err := json.Unmarshal(msg, &payload)
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
 			return
 		}
 
 		ftIdx := getNearestN(ertTeams.ftTeams, payload.FtCount, payload.Location)
-		fmt.Println("Nearest ft: ", ftIdx)
+		log.Println("Nearest ft: ", ftIdx)
 
 		for _, v := range ftIdx {
 			ertTeams.ftTeams[v].dest = payload.Location
@@ -121,7 +124,7 @@ func messagePubHandler(topic string, msg []byte) {
 		}
 
 		ambIdx := getNearestN(ertTeams.ambTeams, payload.AmbCount, payload.Location)
-		fmt.Println("Nearest amb: ", ambIdx)
+		log.Println("Nearest amb: ", ambIdx)
 
 		for _, v := range ambIdx {
 			ertTeams.ambTeams[v].dest = payload.Location
@@ -131,7 +134,7 @@ func messagePubHandler(topic string, msg []byte) {
 		}
 
 		pcIdx := getNearestN(ertTeams.pcTeams, payload.PcCount, payload.Location)
-		fmt.Println("Nearest pc: ", pcIdx)
+		log.Println("Nearest pc: ", pcIdx)
 
 		for _, v := range pcIdx {
 			ertTeams.pcTeams[v].dest = payload.Location
@@ -166,7 +169,7 @@ func getNearestN(teams []ERT, count int, dest Point) []int {
 		return int(diff)
 	})
 
-	fmt.Println(distances)
+	log.Println(distances)
 
 	indices := make([]int, count)
 	for i := range indices {
@@ -203,7 +206,7 @@ func genStaticRoute(count int) Route {
 }
 
 func genDestPts(source, dest Point) Route {
-	endpoint := fmt.Sprintf("%s?origin=%f,%f&destination=%f,%f",
+	endpoint := fmt.Sprintf("%s/route?origin=%f,%f&destination=%f,%f",
 		MAP_MGMT_ENDPOINT,
 		source.Latitude,
 		source.Longitude,
@@ -214,24 +217,39 @@ func genDestPts(source, dest Point) Route {
 	resp, err := http.Get(endpoint)
 	if err != nil {
 		log.Printf("Map Mgmt Error: %v", err)
-		return Route{}
+		return Route{
+			source,
+			dest,
+		}
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("Map Mgmt Payload Error: %v", err)
-		return Route{}
+		return Route{
+			source,
+			dest,
+		}
 	}
+	log.Printf("Map management body: %s", body)
 
 	var payload MAP_MGMT_PAYLOAD
 	err = json.Unmarshal(body, &payload)
 	if err != nil {
 		log.Printf("Map Mgmt Unmarshal Error: %v", err)
-		return Route{}
+		return Route{
+			source,
+			dest,
+		}
 	}
+	// log.Printf("Map management unmarshalled payload: %v", payload)
 
 	pts := make([]Point, 0)
 	for _, coord := range payload.Paths[0].Points.Coords {
+		if len(coord) != 2 {
+			log.Println("Unable to read coordinates")
+			continue
+		}
 		pts = append(pts, Point{
 			coord[0],
 			coord[1],
@@ -239,44 +257,36 @@ func genDestPts(source, dest Point) Route {
 	}
 
 	return pts
-
-	// latDelta := (dest.Latitude - source.Latitude) / float64(numberOfPts)
-	// longDelta := (dest.Longitude - source.Longitude) / float64(numberOfPts)
-
-	// var lat float64 = source.Latitude
-	// var long float64 = source.Longitude
-
-	// for i := 0; i < numberOfPts; i++ {
-	// 	lat += latDelta
-	// 	long += longDelta
-	// 	pts = append(pts, Point{lat, long})
-	// }
-
-	// return pts
 }
 
 func main() {
-	MAP_MGMT_ENDPOINT = os.Getenv("MAP_MGMT_ENDPOINT")
-	if MAP_MGMT_ENDPOINT == "" {
-		log.Fatal("MAP_MGMT_ENDPOINT not set")
-	}
+	setGlobalVar()
+
+	MAP_MGMT_ENDPOINT = strings.Trim(MAP_MGMT_ENDPOINT, "/")
+	log.Println(MAP_MGMT_ENDPOINT)
 
 	writer, reader := setupClient()
-
-	go func() {
-		for {
-			m, err := reader.ReadMessage(context.Background())
-			if err != nil {
-				log.Printf("error reading message: %v", err)
-				continue
-			}
-			messagePubHandler(m.Topic, m.Value)
+	defer func() {
+		if err := writer.Close(); err != nil {
+			log.Printf("failed to close kafka writer: %v", err)
+		}
+		if err := reader.Close(); err != nil {
+			log.Printf("failed to close kafka reader: %v", err)
 		}
 	}()
 
-	ftCount := 3
-	ambCount := 5
-	pcCount := 4
+	ftCount, err := strconv.Atoi(os.Getenv("FT_COUNT"))
+	if err != nil {
+		ftCount = 3
+	}
+	ambCount, err := strconv.Atoi(os.Getenv("AMB_COUNT"))
+	if err != nil {
+		ambCount = 3
+	}
+	pcCount, err := strconv.Atoi(os.Getenv("PC_COUNT"))
+	if err != nil {
+		pcCount = 3
+	}
 	ertTeams.ftTeams = genERT(FIRE_TRUCK, ftCount)
 	ertTeams.ambTeams = genERT(AMBULANCE, ambCount)
 	ertTeams.pcTeams = genERT(PATROL_CAR, pcCount)
@@ -307,7 +317,7 @@ func main() {
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Printf("error generating incident payload: %v\n", err)
+		log.Printf("error generating incident payload: %v\n", err)
 	}
 
 	time.Sleep(10 * time.Second)
@@ -317,10 +327,39 @@ func main() {
 		Value: payloadBytes,
 	})
 	if err != nil {
-		fmt.Printf("error publishing incident payload: %v\n", err)
+		log.Printf("error publishing incident payload: %v\n", err)
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m, err := reader.ReadMessage(context.Background())
+		if err != nil {
+			log.Printf("error reading message: %v", err)
+			continue
+		}
+		messagePubHandler(m.Topic, m.Value)
 	}
 
 	select {}
+}
+
+func setGlobalVar() {
+	incidentChannel = os.Getenv("KAFKA_TOPIC_INCIDENTS")
+	if incidentChannel == "" {
+		log.Fatal("KAFKA_TOPIC_INCIDENTS not set")
+	}
+
+	ertChannel = os.Getenv("KAFKA_TOPIC_LOCATIONS")
+	if ertChannel == "" {
+		log.Fatal("KAFKA_TOPIC_LOCATIONS not set")
+	}
+
+	MAP_MGMT_ENDPOINT = os.Getenv("MAP_MGMT_ENDPOINT")
+	if MAP_MGMT_ENDPOINT == "" {
+		log.Fatal("MAP_MGMT_ENDPOINT not set")
+	}
 }
 
 func genERT(ertType ERTType, count int) []ERT {
@@ -358,7 +397,7 @@ func updatePosition(eRT *ERT, writer *kafka.Writer) {
 		}
 		payloadBytes, err := json.Marshal(payload)
 		if err != nil {
-			fmt.Printf("error generating payload: %v\n", err)
+			log.Printf("error generating payload: %v\n", err)
 			return
 		}
 
@@ -367,12 +406,17 @@ func updatePosition(eRT *ERT, writer *kafka.Writer) {
 			Value: payloadBytes,
 		})
 		if err != nil {
-			fmt.Printf("Error publishing location payload: %v\n", err)
+			log.Printf("Error publishing location payload: %v\n", err)
 		}
 	}
 }
 
 func updateERTPosition(member *ERT) {
+	if member.destIdx >= len(member.destRt) {
+		log.Println("Idx going out of range")
+		log.Println(member)
+		return
+	}
 	member.location = member.destRt[member.destIdx]
 	member.destIdx++
 
@@ -380,7 +424,7 @@ func updateERTPosition(member *ERT) {
 		if member.dispatched {
 			member.dispatched = false
 		}
-		// fmt.Printf("%s reached\n", member.ERTType)
+		log.Printf("%s reached\n", member.ID)
 		member.rtIdx = (member.rtIdx + 1) % len(member.patrol)
 		member.dest = member.patrol[member.rtIdx]
 
@@ -401,24 +445,15 @@ func setupClient() (*kafka.Writer, *kafka.Reader) {
 		Balancer: &kafka.LeastBytes{},
 	})
 
-	defer func() {
-		if err := writer.Close(); err != nil {
-			log.Printf("failed to close kafka writer: %v", err)
-		}
-	}()
-
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     []string{kafkaBroker},
-		GroupID:     groupID,
-		GroupTopics: []string{ertChannel, incidentChannel},
-		MinBytes:    10e3, // 10 KB
-		MaxBytes:    10e6, // 10 MB
+		Brokers:   []string{kafkaBroker},
+		Partition: 0,
+		Topic:     incidentChannel,
+		MinBytes:  10e3, // 10 KB
+		MaxBytes:  10e6, // 10 MB
 	})
-	defer func() {
-		if err := reader.Close(); err != nil {
-			log.Printf("failed to close kafka reader: %v", err)
-		}
-	}()
+
+	log.Println("Kafka reader and writer set up")
 
 	return writer, reader
 }
