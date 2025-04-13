@@ -335,7 +335,7 @@ func genERT(ertType ERTType, count int) []ERT {
 		}
 
 		ert.dest = ert.patrol[0]
-		ert.destRt = genDestPts(ert.location, ert.dest, 1+rand.Intn(5))
+		ert.destRt = genDestPts(ert.location, ert.dest)
 
 		ertTeams = append(ertTeams, ert)
 	}
