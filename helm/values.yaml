@@ -15,6 +15,7 @@ env:
   GIN_MODE: "release"
   MAP_MGMT_ENDPOINT: "http://$(DEMO_GPSD_MAP_MGMT_SERVICE_HOST):$(DEMO_GPSD_MAP_MGMT_SERVICE_PORT)"
   KAFKA_BROKER: "152.53.124.121:9092"
+  KAFKA_TOPIC: "latest_incidents"
 
 serviceAccount:
   create: true
