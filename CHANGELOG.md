@@ -7,10 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.2] - 2025-04-13
+## [0.0.3] - 2025-04-13
 
 
 ### Fixed
-7a1d7f1 fix: release pipeline
-1b06f22 fix: add helm ci/cd stuff
+96dd5bb fix: add KAFKA_TOPIC
 
