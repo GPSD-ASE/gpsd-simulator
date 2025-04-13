@@ -3,12 +3,12 @@ entries:
   gpsd-simulator:
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2025-04-13T20:11:59.880553201Z"
+    created: "2025-04-13T22:16:35.573151337Z"
     description: A Helm chart for deploying the GPSD simulator.
-    digest: fba1e5675b1b67f752adc40a91101febe6d92785b6ed9589432dbd17f241e73b
+    digest: ae866ad1007fee02052689d13142c40385fe434988026e4692e304b158d6db77
     name: gpsd-simulator
     type: application
     urls:
-    - https://gpsd-ase.github.io/gpsd-simulator/gpsd-simulator-0.0.3.tgz
-    version: 0.0.3
-generated: "2025-04-13T20:11:59.88015684Z"
+    - https://gpsd-ase.github.io/gpsd-simulator/gpsd-simulator-0.0.4.tgz
+    version: 0.0.4
+generated: "2025-04-13T22:16:35.572770737Z"
