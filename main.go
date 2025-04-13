@@ -1,26 +1,32 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"math/rand"
+	"net/http"
+	"os"
 	"slices"
 	"time"
 
-	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/segmentio/kafka-go"
 )
 
 const (
-	broker = "localhost"
-	port   = 1883
+	groupID = "gpsd"
 
 	dublinLatitude  = 53.350140
 	dublinLongitude = -6.266155
 
-	incidentChannel = "gpsd/incident"
-	ertChannel      = "gpsd/location"
+	incidentChannel = "incident"
+	ertChannel      = "location"
 )
+
+var MAP_MGMT_ENDPOINT string
 
 type LocationPayload struct {
 	Id          string  `json:"id"`
@@ -58,15 +64,23 @@ const (
 )
 
 type ERT struct {
-	ID       string
-	ERTType  ERTType
-	location Point
-	dest     Point
-	destRt   Route
-	destIdx  int
-	patrol   Route
-	rtIdx    int
-	reached  bool
+	ID         string
+	ERTType    ERTType
+	location   Point
+	dest       Point
+	destRt     Route
+	destIdx    int
+	patrol     Route
+	rtIdx      int
+	dispatched bool
+}
+
+type MAP_MGMT_PAYLOAD struct {
+	Paths []struct {
+		Points struct {
+			Coords [][]float64 `json:"coordinates"`
+		} `json:"points"`
+	} `json:"paths"`
 }
 
 var ertTeams struct {
@@ -75,27 +89,22 @@ var ertTeams struct {
 	pcTeams  []ERT
 }
 
-func messagePubHandler(client mqtt.Client, msg mqtt.Message) {
-	// fmt.Printf("Topic: %s\n", msg.Topic())
+func messagePubHandler(topic string, msg []byte) {
+	fmt.Printf("Topic: %s\tMessage: %s", topic, msg)
 
-	switch msg.Topic() {
+	switch topic {
 	case ertChannel:
 
 		var payload LocationPayload
-		err := json.Unmarshal(msg.Payload(), &payload)
+		err := json.Unmarshal(msg, &payload)
 		if err != nil {
 			fmt.Println(err)
+			return
 		}
-
-		// if payload.Type == FIRE_TRUCK {
-		fmt.Printf("%s\n", msg.Payload())
-		// }
 
 	case incidentChannel:
 		var payload IncidentPayload
-		fmt.Printf("%s\n", msg.Payload())
-
-		err := json.Unmarshal(msg.Payload(), &payload)
+		err := json.Unmarshal(msg, &payload)
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -107,7 +116,8 @@ func messagePubHandler(client mqtt.Client, msg mqtt.Message) {
 		for _, v := range ftIdx {
 			ertTeams.ftTeams[v].dest = payload.Location
 			ertTeams.ftTeams[v].destIdx = 0
-			ertTeams.ftTeams[v].destRt = genDestPts(ertTeams.ftTeams[v].location, payload.Location, 6)
+			ertTeams.ftTeams[v].destRt = genDestPts(ertTeams.ftTeams[v].location, payload.Location)
+			ertTeams.ftTeams[v].dispatched = true
 		}
 
 		ambIdx := getNearestN(ertTeams.ambTeams, payload.AmbCount, payload.Location)
@@ -116,7 +126,8 @@ func messagePubHandler(client mqtt.Client, msg mqtt.Message) {
 		for _, v := range ambIdx {
 			ertTeams.ambTeams[v].dest = payload.Location
 			ertTeams.ambTeams[v].destIdx = 0
-			ertTeams.ambTeams[v].destRt = genDestPts(ertTeams.ambTeams[v].location, payload.Location, 6)
+			ertTeams.ambTeams[v].destRt = genDestPts(ertTeams.ambTeams[v].location, payload.Location)
+			ertTeams.ambTeams[v].dispatched = true
 		}
 
 		pcIdx := getNearestN(ertTeams.pcTeams, payload.PcCount, payload.Location)
@@ -125,7 +136,8 @@ func messagePubHandler(client mqtt.Client, msg mqtt.Message) {
 		for _, v := range pcIdx {
 			ertTeams.pcTeams[v].dest = payload.Location
 			ertTeams.pcTeams[v].destIdx = 0
-			ertTeams.pcTeams[v].destRt = genDestPts(ertTeams.pcTeams[v].location, payload.Location, 6)
+			ertTeams.pcTeams[v].destRt = genDestPts(ertTeams.pcTeams[v].location, payload.Location)
+			ertTeams.pcTeams[v].dispatched = true
 		}
 
 	default:
@@ -142,6 +154,10 @@ func getNearestN(teams []ERT, count int, dest Point) []int {
 		distances[i] = dist{
 			idx: i,
 			val: distance(teams[i].location, dest),
+		}
+
+		if teams[i].dispatched {
+			distances[i].val = math.Inf(1)
 		}
 	}
 
@@ -169,24 +185,6 @@ func distance(src, dest Point) float64 {
 	return math.Sqrt(x2 + y2)
 }
 
-var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	fmt.Println("Connected")
-}
-
-var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("Connect lost: %v\n", err)
-}
-
-func subscribe(client mqtt.Client) {
-	token := client.Subscribe(ertChannel, 1, nil)
-	token.Wait()
-	fmt.Printf("Subscribed to topic %s\n", ertChannel)
-
-	token = client.Subscribe(incidentChannel, 1, nil)
-	token.Wait()
-	fmt.Printf("Subscribed to topic %s\n", incidentChannel)
-}
-
 func randomPt() Point {
 	return Point{
 		dublinLatitude + (-1 + rand.Float64()*2),
@@ -204,26 +202,78 @@ func genStaticRoute(count int) Route {
 	return pts
 }
 
-func genDestPts(source, dest Point, numberOfPts int) Route {
-	pts := make([]Point, 0, numberOfPts)
+func genDestPts(source, dest Point) Route {
+	endpoint := fmt.Sprintf("%s?origin=%f,%f&destination=%f,%f",
+		MAP_MGMT_ENDPOINT,
+		source.Latitude,
+		source.Longitude,
+		dest.Latitude,
+		dest.Longitude,
+	)
 
-	latDelta := (dest.Latitude - source.Latitude) / float64(numberOfPts)
-	longDelta := (dest.Longitude - source.Longitude) / float64(numberOfPts)
+	resp, err := http.Get(endpoint)
+	if err != nil {
+		log.Printf("Map Mgmt Error: %v", err)
+		return Route{}
+	}
 
-	var lat float64 = source.Latitude
-	var long float64 = source.Longitude
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Map Mgmt Paylod Error: %v", err)
+		return Route{}
+	}
 
-	for i := 0; i < numberOfPts; i++ {
-		lat += latDelta
-		long += longDelta
-		pts = append(pts, Point{lat, long})
+	var payload MAP_MGMT_PAYLOAD
+	err = json.Unmarshal(body, &payload)
+	if err != nil {
+		log.Printf("Map Mgmt Unmarshall Error: %v", err)
+		return Route{}
+	}
+
+	pts := make([]Point, 0)
+	for _, coord := range payload.Paths[0].Points.Coords {
+		pts = append(pts, Point{
+			coord[0],
+			coord[1],
+		})
 	}
 
 	return pts
+
+	// latDelta := (dest.Latitude - source.Latitude) / float64(numberOfPts)
+	// longDelta := (dest.Longitude - source.Longitude) / float64(numberOfPts)
+
+	// var lat float64 = source.Latitude
+	// var long float64 = source.Longitude
+
+	// for i := 0; i < numberOfPts; i++ {
+	// 	lat += latDelta
+	// 	long += longDelta
+	// 	pts = append(pts, Point{lat, long})
+	// }
+
+	// return pts
 }
 
 func main() {
-	client := setupClient()
+	MAP_MGMT_ENDPOINT = os.Getenv("MAP_MGMT_ENDPOINT")
+	if MAP_MGMT_ENDPOINT == "" {
+		log.Fatal("MAP_MGMT_ENDPOINT not set")
+	}
+
+	writer, reader := setupClient()
+
+	go func() {
+		for {
+			m, err := reader.ReadMessage(context.Background())
+			if err != nil {
+				log.Printf("error reading message: %v", err)
+				continue
+			}
+			messagePubHandler(m.Topic, m.Value)
+		}
+	}()
+
 	ftCount := 3
 	ambCount := 5
 	pcCount := 4
@@ -231,18 +281,16 @@ func main() {
 	ertTeams.ambTeams = genERT(AMBULANCE, ambCount)
 	ertTeams.pcTeams = genERT(PATROL_CAR, pcCount)
 
-	subscribe(client)
-
 	for i := range ertTeams.ftTeams {
-		go updatePosition(&ertTeams.ftTeams[i], &client)
+		go updatePosition(&ertTeams.ftTeams[i], writer)
 	}
 
 	for i := range ertTeams.ambTeams {
-		go updatePosition(&ertTeams.ambTeams[i], &client)
+		go updatePosition(&ertTeams.ambTeams[i], writer)
 	}
 
 	for i := range ertTeams.pcTeams {
-		go updatePosition(&ertTeams.pcTeams[i], &client)
+		go updatePosition(&ertTeams.pcTeams[i], writer)
 	}
 
 	payload := IncidentPayload{
@@ -259,11 +307,18 @@ func main() {
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Errorf("Error: %v\n", err)
+		fmt.Printf("error generating incident payload: %v\n", err)
 	}
 
 	time.Sleep(10 * time.Second)
-	client.Publish(incidentChannel, 0, false, payloadBytes)
+
+	err = writer.WriteMessages(context.Background(), kafka.Message{
+		Topic: incidentChannel,
+		Value: payloadBytes,
+	})
+	if err != nil {
+		fmt.Printf("error publishing incident payload: %v\n", err)
+	}
 
 	select {}
 }
@@ -287,7 +342,7 @@ func genERT(ertType ERTType, count int) []ERT {
 	return ertTeams
 }
 
-func updatePosition(eRT *ERT, client *mqtt.Client) {
+func updatePosition(eRT *ERT, writer *kafka.Writer) {
 	ticker := time.NewTicker(4 * time.Second)
 	defer ticker.Stop()
 
@@ -303,10 +358,17 @@ func updatePosition(eRT *ERT, client *mqtt.Client) {
 		}
 		payloadBytes, err := json.Marshal(payload)
 		if err != nil {
-			fmt.Errorf("Error: %v\n", err)
+			fmt.Printf("error generating payload: %v\n", err)
+			return
 		}
 
-		(*client).Publish(ertChannel, 0, false, payloadBytes)
+		err = writer.WriteMessages(context.Background(), kafka.Message{
+			Topic: ertChannel,
+			Value: payloadBytes,
+		})
+		if err != nil {
+			fmt.Printf("Error publishing location payload: %v\n", err)
+		}
 	}
 }
 
@@ -315,25 +377,48 @@ func updateERTPosition(member *ERT) {
 	member.destIdx++
 
 	if member.location.same(member.dest) {
+		if member.dispatched {
+			member.dispatched = false
+		}
 		// fmt.Printf("%s reached\n", member.ERTType)
 		member.rtIdx = (member.rtIdx + 1) % len(member.patrol)
 		member.dest = member.patrol[member.rtIdx]
 
-		member.destRt = genDestPts(member.location, member.dest, 1+rand.Intn(3))
+		member.destRt = genDestPts(member.location, member.dest)
 		member.destIdx = 0
 	}
 }
 
-func setupClient() mqtt.Client {
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port))
-	opts.SetClientID("Simulator")
-	opts.SetDefaultPublishHandler(messagePubHandler)
-	opts.OnConnect = connectHandler
-	opts.OnConnectionLost = connectLostHandler
-	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+func setupClient() (*kafka.Writer, *kafka.Reader) {
+	kafkaBroker := os.Getenv("KAFKA_BROKER")
+
+	if kafkaBroker == "" {
+		log.Panicln("'KAFKA_BROKER' not set")
 	}
-	return client
+
+	writer := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{kafkaBroker},
+		Balancer: &kafka.LeastBytes{},
+	})
+
+	defer func() {
+		if err := writer.Close(); err != nil {
+			log.Printf("failed to close kafka writer: %v", err)
+		}
+	}()
+
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     []string{kafkaBroker},
+		GroupID:     groupID,
+		GroupTopics: []string{ertChannel, incidentChannel},
+		MinBytes:    10e3, // 10 KB
+		MaxBytes:    10e6, // 10 MB
+	})
+	defer func() {
+		if err := reader.Close(); err != nil {
+			log.Printf("failed to close kafka reader: %v", err)
+		}
+	}()
+
+	return writer, reader
 }
